@@ -7,10 +7,11 @@
 //!   lose what was parked for someone who was away.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::Mutex as AsyncMutex;
 
 /// 领取后多久没确认就重新可见（进程被杀 / 连接断在半路）。
@@ -21,6 +22,34 @@ use tokio::sync::Mutex as AsyncMutex;
 /// 64 位。lease 时长是正数且远小于 `i64::MAX`，用 `i64` 与数据库列类型
 /// 直接对齐，避免在每个绑定处 `as i64`。
 pub const LEASE_MS: i64 = 30_000;
+
+/// 全局离线队列预算。按**所有用户合计**计，不是每用户上限的简单叠加：
+/// 每用户 5,000 条乘以任意多账号仍可把磁盘吃光。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OfflineLimits {
+    /// 所有用户合计的最多行数。
+    pub max_total_rows: usize,
+    /// 所有用户合计的帧字节上限（不含 SQLite 页/索引开销）。
+    pub max_total_bytes: usize,
+}
+
+impl Default for OfflineLimits {
+    fn default() -> Self {
+        Self {
+            max_total_rows: 100_000,
+            max_total_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
+/// 预算不足时的统一拒绝信息；调用方据此让投递任务保持 pending。
+fn budget_error(rows: usize, bytes: usize, limits: OfflineLimits) -> anyhow::Error {
+    anyhow::anyhow!(
+        "offline queue budget exceeded: rows {rows}/{} bytes {bytes}/{}",
+        limits.max_total_rows,
+        limits.max_total_bytes
+    )
+}
 
 /// Parked-message store. Semantics: per-user FIFO, capped, oldest dropped past
 /// the cap.
@@ -101,14 +130,25 @@ struct MemEntry {
 pub struct MemoryOffline {
     inner: AsyncMutex<HashMap<String, VecDeque<MemEntry>>>,
     cap_per_user: usize,
+    limits: OfflineLimits,
+    total_rows: AtomicUsize,
+    total_bytes: AtomicUsize,
     next_id: std::sync::atomic::AtomicI64,
 }
 
 impl MemoryOffline {
     pub fn new(cap_per_user: usize) -> Arc<Self> {
+        Self::with_limits(cap_per_user, OfflineLimits::default())
+    }
+
+    /// 测试与小规模部署可以收紧全局预算；生产走默认值。
+    pub fn with_limits(cap_per_user: usize, limits: OfflineLimits) -> Arc<Self> {
         Arc::new(Self {
             inner: AsyncMutex::new(HashMap::new()),
-            cap_per_user,
+            cap_per_user: cap_per_user.max(1),
+            limits,
+            total_rows: AtomicUsize::new(0),
+            total_bytes: AtomicUsize::new(0),
             next_id: std::sync::atomic::AtomicI64::new(1),
         })
     }
@@ -117,20 +157,41 @@ impl MemoryOffline {
 #[async_trait]
 impl OfflineStore for MemoryOffline {
     async fn enqueue(&self, user: &str, frame: Vec<u8>) -> anyhow::Result<()> {
+        let mut m = self.inner.lock().await;
+        let rows = self.total_rows.load(Ordering::Relaxed);
+        let bytes = self.total_bytes.load(Ordering::Relaxed);
+        if rows + 1 > self.limits.max_total_rows
+            || bytes.saturating_add(frame.len()) > self.limits.max_total_bytes
+        {
+            return Err(budget_error(
+                rows + 1,
+                bytes.saturating_add(frame.len()),
+                self.limits,
+            ));
+        }
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut m = self.inner.lock().await;
         let dq = m.entry(user.to_string()).or_default();
+        let mut dropped_rows = 0usize;
+        let mut dropped_bytes = 0usize;
         while dq.len() >= self.cap_per_user {
-            dq.pop_front(); // drop oldest
+            if let Some(dropped) = dq.pop_front() {
+                dropped_rows += 1;
+                dropped_bytes = dropped_bytes.saturating_add(dropped.frame.len());
+            }
         }
+        let added_bytes = frame.len();
         dq.push_back(MemEntry {
             id,
             frame,
             claimed_until: 0,
             claim_token: String::new(),
         });
+        self.total_rows.fetch_sub(dropped_rows, Ordering::Relaxed);
+        self.total_bytes.fetch_sub(dropped_bytes, Ordering::Relaxed);
+        self.total_rows.fetch_add(1, Ordering::Relaxed);
+        self.total_bytes.fetch_add(added_bytes, Ordering::Relaxed);
         Ok(())
     }
 
@@ -166,7 +227,12 @@ impl OfflineStore for MemoryOffline {
                 .iter()
                 .position(|e| e.id == id && e.claim_token == claim_token)
             {
-                dq.remove(pos);
+                let Some(removed) = dq.remove(pos) else {
+                    break;
+                };
+                self.total_rows.fetch_sub(1, Ordering::Relaxed);
+                self.total_bytes
+                    .fetch_sub(removed.frame.len(), Ordering::Relaxed);
                 break;
             }
         }
@@ -207,17 +273,37 @@ impl OfflineStore for MemoryOffline {
 pub struct SqliteOffline {
     conn: Mutex<Connection>,
     cap_per_user: usize,
+    limits: OfflineLimits,
+    total_rows: AtomicUsize,
+    total_bytes: AtomicUsize,
 }
 
 impl SqliteOffline {
     /// `None` uses a temporary on-disk database; `Some(path)` is `WXLIKE_DB`.
     pub fn open(path: Option<&str>, cap_per_user: usize) -> anyhow::Result<Arc<Self>> {
+        Self::open_with_limits(path, cap_per_user, OfflineLimits::default())
+    }
+
+    /// 打开并应用全局预算；已有库也会按实际行数初始化计数。
+    pub fn open_with_limits(
+        path: Option<&str>,
+        cap_per_user: usize,
+        limits: OfflineLimits,
+    ) -> anyhow::Result<Arc<Self>> {
         let conn = open_connection(path)?;
         init_schema(&conn)?;
         migrate_claimed_until(&conn)?;
+        let (rows, bytes): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(frame)), 0) FROM offline_inbox",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         Ok(Arc::new(Self {
             conn: Mutex::new(conn),
             cap_per_user: cap_per_user.max(1),
+            limits,
+            total_rows: AtomicUsize::new(usize::try_from(rows).unwrap_or(usize::MAX)),
+            total_bytes: AtomicUsize::new(usize::try_from(bytes).unwrap_or(usize::MAX)),
         }))
     }
 
@@ -293,16 +379,40 @@ fn migrate_column(conn: &Connection, name: &str, sql: &str) -> anyhow::Result<()
 impl OfflineStore for SqliteOffline {
     async fn enqueue(&self, user: &str, frame: Vec<u8>) -> anyhow::Result<()> {
         let c = self.c();
+        let rows = self.total_rows.load(Ordering::Relaxed);
+        let bytes = self.total_bytes.load(Ordering::Relaxed);
+        if rows + 1 > self.limits.max_total_rows
+            || bytes.saturating_add(frame.len()) > self.limits.max_total_bytes
+        {
+            return Err(budget_error(
+                rows + 1,
+                bytes.saturating_add(frame.len()),
+                self.limits,
+            ));
+        }
+        let added_bytes = frame.len();
         c.execute(
             "INSERT INTO offline_inbox(user, frame, enqueued_at) VALUES(?1, ?2, ?3)",
             params![user, frame, wxlike_core::types::now_ms() as i64],
         )?;
         // trim to the newest `cap` rows for this user
-        c.execute(
+        let mut stmt = c.prepare(
             "DELETE FROM offline_inbox WHERE user = ?1 AND id NOT IN
-             (SELECT id FROM offline_inbox WHERE user = ?1 ORDER BY id DESC LIMIT ?2)",
-            params![user, self.cap_per_user as i64],
+             (SELECT id FROM offline_inbox WHERE user = ?1 ORDER BY id DESC LIMIT ?2)
+             RETURNING LENGTH(frame)",
         )?;
+        let removed: Vec<i64> = stmt
+            .query_map(params![user, self.cap_per_user as i64], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let dropped_rows = removed.len();
+        let dropped_bytes: usize = removed
+            .into_iter()
+            .map(|n| usize::try_from(n).unwrap_or(0))
+            .sum();
+        self.total_rows.fetch_sub(dropped_rows, Ordering::Relaxed);
+        self.total_bytes.fetch_sub(dropped_bytes, Ordering::Relaxed);
+        self.total_rows.fetch_add(1, Ordering::Relaxed);
+        self.total_bytes.fetch_add(added_bytes, Ordering::Relaxed);
         Ok(())
     }
 
@@ -336,10 +446,20 @@ impl OfflineStore for SqliteOffline {
     }
 
     async fn ack(&self, id: i64, claim_token: &str) -> anyhow::Result<()> {
-        self.c().execute(
-            "DELETE FROM offline_inbox WHERE id = ?1 AND claim_token = ?2",
-            params![id, claim_token],
-        )?;
+        let c = self.c();
+        let removed: Option<i64> = c
+            .query_row(
+                "DELETE FROM offline_inbox WHERE id = ?1 AND claim_token = ?2
+                 RETURNING LENGTH(frame)",
+                params![id, claim_token],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(bytes) = removed {
+            self.total_rows.fetch_sub(1, Ordering::Relaxed);
+            self.total_bytes
+                .fetch_sub(usize::try_from(bytes).unwrap_or(0), Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -558,5 +678,76 @@ mod tests {
         store.enqueue("bob", b"b".to_vec()).await.unwrap();
         assert_eq!(store.drain("alice").await.unwrap(), vec![b"a".to_vec()]);
         assert_eq!(store.depth("bob").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn memory_global_row_budget_rejects_and_recovers() {
+        let store = MemoryOffline::with_limits(
+            10,
+            OfflineLimits {
+                max_total_rows: 2,
+                max_total_bytes: usize::MAX,
+            },
+        );
+        store.enqueue("a", b"1".to_vec()).await.unwrap();
+        store.enqueue("b", b"2".to_vec()).await.unwrap();
+        let err = store
+            .enqueue("c", b"3".to_vec())
+            .await
+            .expect_err("third row exceeds the global budget");
+        assert!(err.to_string().contains("budget exceeded"), "{err}");
+        assert_eq!(
+            store.depth("c").await.unwrap(),
+            0,
+            "rejected row is not parked"
+        );
+
+        // 消费掉已有行后预算释放，新行可以重新入队
+        assert_eq!(store.drain("a").await.unwrap(), vec![b"1".to_vec()]);
+        store.enqueue("c", b"3".to_vec()).await.unwrap();
+        assert_eq!(store.depth("c").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn memory_global_byte_budget_counts_every_user() {
+        let store = MemoryOffline::with_limits(
+            10,
+            OfflineLimits {
+                max_total_rows: 10,
+                max_total_bytes: 4,
+            },
+        );
+        store.enqueue("a", b"aa".to_vec()).await.unwrap();
+        store.enqueue("b", b"bb".to_vec()).await.unwrap();
+        let err = store
+            .enqueue("c", b"cc".to_vec())
+            .await
+            .expect_err("fifth byte exceeds the global budget");
+        assert!(err.to_string().contains("bytes 6/4"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn sqlite_global_budget_is_enforced_across_users() {
+        let store = SqliteOffline::open_with_limits(
+            None,
+            10,
+            OfflineLimits {
+                max_total_rows: 2,
+                max_total_bytes: 4,
+            },
+        )
+        .unwrap();
+        store.enqueue("a", b"aa".to_vec()).await.unwrap();
+        store.enqueue("b", b"bb".to_vec()).await.unwrap();
+        let err = store
+            .enqueue("c", b"cc".to_vec())
+            .await
+            .expect_err("global caps apply across users");
+        assert!(err.to_string().contains("budget exceeded"), "{err}");
+        assert_eq!(store.depth("c").await.unwrap(), 0);
+
+        store.drain("a").await.unwrap();
+        store.enqueue("c", b"cc".to_vec()).await.unwrap();
+        assert_eq!(store.depth("c").await.unwrap(), 1);
     }
 }

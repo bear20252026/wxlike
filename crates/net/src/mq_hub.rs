@@ -110,6 +110,9 @@ const DELIVERY_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// 超时按"没写成功"处理 → 落收件人的离线队列，比卡住强。
 const DELIVER_WRITE_TIMEOUT_MS: u64 = 2_000;
 
+/// 写失败后重置连接的等待上限；载体不应阻塞投递循环。
+const DELIVER_ABORT_TIMEOUT_MS: u64 = 500;
+
 impl Default for MqHubOptions {
     fn default() -> Self {
         Self {
@@ -2408,12 +2411,17 @@ async fn deliver_here(
     frame: &[u8],
     park_offline: bool,
 ) -> anyhow::Result<()> {
-    if deliver_to(state, user, frame).await > 0 {
+    let write = deliver_to(state, user, frame).await;
+    // 只有**所有**在线设备都写成功才算整个用户已投递。多设备里一台成功、
+    // 另一台超时也必须是"未完成"：否则那台设备永远收不到，而 outbox 已退休。
+    if write.written > 0 && write.failed == 0 {
         return Ok(());
     }
     if !park_offline {
         return Ok(());
     }
+    // 失败（或只成功了一部分）就留一份 durable copy；客户端按 msg_id 去重，
+    // 已收到的设备不会重复显示。
     park(state, user, frame).await
 }
 
@@ -2502,22 +2510,28 @@ async fn deliver_local(state: &Arc<HubState>, env: &Envelope) {
         Ok(f) => f,
         Err(_) => return,
     };
-    let targets: Vec<PeerConn> = {
+    let targets: Vec<(String, PeerConn)> = {
         let map = state.peers.read().await;
         map.iter()
             .filter(|(user, _)| **user != env.sender)
             .filter(|(user, _)| env.to.is_empty() || env.to.contains(user))
-            .flat_map(|(_, conns)| conns.values().cloned())
+            .flat_map(|(user, conns)| {
+                conns
+                    .values()
+                    .cloned()
+                    .map(|conn| (user.clone(), conn))
+                    .collect::<Vec<_>>()
+            })
             .collect()
     };
     let tasks: Vec<_> = targets
         .into_iter()
-        .map(|conn| {
+        .map(|(user, conn)| {
             let frame = frame.clone();
             tokio::spawn(async move {
-                if let Err(err) = conn.send_frame(&frame).await {
-                    eprintln!("[mq-hub] local deliver failed: {err}");
-                }
+                // 广播同样要 await + 有界：一台慢设备不能拖死整轮广播；
+                // 超时后废掉该连接，半帧不会污染后续消息。
+                let _ = write_frame_to(&conn, &user, &frame).await;
             })
         })
         .collect();
@@ -2527,32 +2541,70 @@ async fn deliver_local(state: &Arc<HubState>, env: &Envelope) {
 /// Write one frame to EVERY live connection of `user` (multi-device fan-out,
 /// ADR-4). A user with two phones sees each message on both.
 ///
-/// 返回**写成功的连接数**。以前这里是 `spawn` 之后立刻返回，调用方永远
-/// 不知道有没有人收到——#9 的"确认了但没人收到"就是这么来的。
-async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) -> usize {
+/// 一次用户级投递的在线结果。`failed` 包含写错误和超时两种"这条连接没收到"。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DeliveryWrite {
+    written: usize,
+    failed: usize,
+}
+
+/// 写一条连接的一帧，超时/失败时废弃整条连接。返回是否写成功。
+async fn write_frame_to(conn: &PeerConn, user: &str, frame: &[u8]) -> bool {
+    let write = tokio::time::timeout(
+        std::time::Duration::from_millis(DELIVER_WRITE_TIMEOUT_MS),
+        conn.send_frame(frame),
+    )
+    .await;
+    match write {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) => {
+            eprintln!("[mq-hub] deliver to {user} failed: {err}");
+            abort_after_write_failure(conn, user).await;
+            false
+        }
+        Err(_) => {
+            eprintln!("[mq-hub] deliver to {user} timed out after {DELIVER_WRITE_TIMEOUT_MS}ms");
+            abort_after_write_failure(conn, user).await;
+            false
+        }
+    }
+}
+
+/// 向 `user` 的**每条**在线连接写一帧（多设备 fan-out，ADR-4）。
+///
+/// 返回逐连接结果，而不是只返回成功数：调用方必须能区分"全部成功"与
+/// "一台成功一台超时"。超时/写失败后主动 [`PeerConn::abort`]，把半帧流废掉，
+/// 避免后续帧接在半帧后造成协议错位。
+async fn deliver_to(state: &Arc<HubState>, user: &str, frame: &[u8]) -> DeliveryWrite {
     let conns: Vec<PeerConn> = {
         let map = state.peers.read().await;
         match map.get(user) {
             Some(c) => c.values().cloned().collect(),
-            None => return 0,
+            None => return DeliveryWrite::default(),
         }
     };
-    let mut written = 0;
+    let mut out = DeliveryWrite::default();
     for conn in conns {
-        let write = tokio::time::timeout(
-            std::time::Duration::from_millis(DELIVER_WRITE_TIMEOUT_MS),
-            conn.send_frame(frame),
-        )
-        .await;
-        match write {
-            Ok(Ok(())) => written += 1,
-            Ok(Err(err)) => eprintln!("[mq-hub] deliver to {user} failed: {err}"),
-            Err(_) => {
-                eprintln!("[mq-hub] deliver to {user} timed out after {DELIVER_WRITE_TIMEOUT_MS}ms")
-            }
+        if write_frame_to(&conn, user, frame).await {
+            out.written += 1;
+        } else {
+            out.failed += 1;
         }
     }
-    written
+    out
+}
+
+/// 写失败后的连接废弃。abort 本身也加超时：载体坏了不能把投递循环卡死。
+async fn abort_after_write_failure(conn: &PeerConn, user: &str) {
+    if tokio::time::timeout(
+        std::time::Duration::from_millis(DELIVER_ABORT_TIMEOUT_MS),
+        conn.abort(),
+    )
+    .await
+    .is_err()
+    {
+        eprintln!("[mq-hub] abort for {user} timed out after {DELIVER_ABORT_TIMEOUT_MS}ms");
+    }
 }
 
 /// Dedup cache occupancy, exposed for tests and metrics.
@@ -2728,5 +2780,98 @@ mod mailbox_replay_tests {
             duplicate.seq, 1,
             "duplicate keeps its original seq, not head 2"
         );
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wxlike_mq::memory::{MemoryMq, MemoryRoutes};
+    use wxlike_mq::MqRouter;
+
+    struct Tx {
+        sends: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+        block: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::conn::FrameTx for Tx {
+        async fn send_frame(&mut self, _frame: &[u8]) -> anyhow::Result<()> {
+            self.sends.fetch_add(1, Ordering::Relaxed);
+            if self.block {
+                std::future::pending::<()>().await;
+            }
+            Ok(())
+        }
+
+        async fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct Rx;
+
+    #[async_trait::async_trait]
+    impl crate::conn::FrameRx for Rx {
+        async fn read_frame(&mut self) -> anyhow::Result<Vec<u8>> {
+            anyhow::bail!("not read in this test")
+        }
+    }
+
+    fn conn(block: bool, aborts: Arc<AtomicUsize>) -> (PeerConn, Arc<AtomicUsize>) {
+        let sends = Arc::new(AtomicUsize::new(0));
+        (
+            PeerConn::new(
+                Box::new(Tx {
+                    sends: sends.clone(),
+                    aborts,
+                    block,
+                }),
+                Box::new(Rx),
+            ),
+            sends,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_partial_multi_device_write_parks_a_durable_copy() {
+        let offline = MemoryOffline::new(10);
+        let options = MqHubOptions {
+            offline: offline.clone(),
+            ..Default::default()
+        };
+        let state = build_hub_state(
+            "h".into(),
+            MqRouter::new(Arc::new(MemoryMq::new()), MemoryRoutes::new()),
+            options,
+        );
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let (good, _good_sends) = conn(false, Arc::new(AtomicUsize::new(0)));
+        let (bad, _bad_sends) = conn(true, aborts.clone());
+        state
+            .peers
+            .write()
+            .await
+            .insert("u".into(), HashMap::from([(1u64, good), (2u64, bad)]));
+
+        let first = deliver_to(&state, "u", b"frame").await;
+        assert_eq!(
+            first,
+            DeliveryWrite {
+                written: 1,
+                failed: 1
+            }
+        );
+        assert_eq!(
+            aborts.load(Ordering::Relaxed),
+            1,
+            "timed-out conn is aborted"
+        );
+
+        // 一台成功不等整个用户成功：必须留 durable copy 给失败/超时的那台设备。
+        deliver_here(&state, "u", b"frame", true).await.unwrap();
+        assert_eq!(offline.depth("u").await.unwrap(), 1);
     }
 }

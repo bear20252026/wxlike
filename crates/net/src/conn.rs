@@ -16,6 +16,7 @@
 
 use anyhow::Context as _;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -27,6 +28,13 @@ pub trait FrameTx: Send {
     /// 主动关闭本连接的发送侧（管理端撤销会话/设备时用）。默认空实现：
     /// 不支持主动关闭的载体只需自然断开。
     async fn close(&mut self) {}
+
+    /// 发送超时/半帧后**废弃**整条连接。与 `close` 不同，这里必须保证
+    /// 后续帧不再写进同一条流：QUIC 用 RESET_STREAM 让对端丢弃半帧，
+    /// 载体不支持重置时至少关闭发送侧。
+    async fn abort(&mut self) {
+        self.close().await;
+    }
 }
 
 /// Read half of a connection, in frames. `Err` = connection over.
@@ -46,6 +54,9 @@ pub type SharedRx = Arc<Mutex<Box<dyn FrameRx>>>;
 pub struct PeerConn {
     tx: SharedTx,
     rx: SharedRx,
+    /// 一旦某次发送超时/写失败就置位；同连接后续写入直接拒绝。
+    /// 半帧之后继续写会让对端把后续字节解析成垃圾，必须整条废弃。
+    poisoned: Arc<AtomicBool>,
     /// Best-effort transport peer address, when the carrier exposes one.
     /// The hub uses it for the pre-auth per-IP budget only; it is never an
     /// identity or an authorization input.
@@ -57,6 +68,7 @@ impl PeerConn {
         Self {
             tx: Arc::new(Mutex::new(Box::new(QuicTx { send }))),
             rx: Arc::new(Mutex::new(Box::new(QuicRx { recv }))),
+            poisoned: Arc::new(AtomicBool::new(false)),
             peer_ip: None,
         }
     }
@@ -67,6 +79,7 @@ impl PeerConn {
         Self {
             tx: Arc::new(Mutex::new(tx)),
             rx: Arc::new(Mutex::new(rx)),
+            poisoned: Arc::new(AtomicBool::new(false)),
             peer_ip: None,
         }
     }
@@ -84,12 +97,11 @@ impl PeerConn {
     }
 
     pub async fn send_frame(&self, frame: &[u8]) -> anyhow::Result<()> {
-        self.tx
-            .lock()
-            .await
-            .send_frame(frame)
-            .await
-            .context("send frame")
+        let mut tx = self.tx.lock().await;
+        if self.poisoned.load(Ordering::Acquire) {
+            anyhow::bail!("connection aborted after a partial or timed-out write");
+        }
+        tx.send_frame(frame).await.context("send frame")
     }
 
     pub async fn read_frame(&self) -> anyhow::Result<Vec<u8>> {
@@ -106,7 +118,15 @@ impl PeerConn {
     /// QUIC 只有发送流句柄，`finish` 是优雅结束；要立即断开整个连接用
     /// `quinn::Connection::close`（由 hub 的 `ConnCloser` 持有，见 `mq_hub`）。
     pub async fn close(&self) {
+        self.poisoned.store(true, Ordering::Release);
         self.tx.lock().await.close().await;
+    }
+
+    /// 发送超时/写失败后废弃连接：先置位，再让载体重置发送流。
+    /// 置位发生在取锁前，排队中的写者拿到锁后会看到并放弃。
+    pub async fn abort(&self) {
+        self.poisoned.store(true, Ordering::Release);
+        self.tx.lock().await.abort().await;
     }
 }
 
@@ -124,6 +144,12 @@ impl FrameTx for QuicTx {
     async fn close(&mut self) {
         // 优雅结束发送方向（发 FIN）；立即断开整个连接走 ConnCloser。
         let _ = self.send.finish();
+    }
+
+    async fn abort(&mut self) {
+        // RESET_STREAM：对端丢弃这条流上没读完的字节，不会把半帧和
+        // 后续帧拼在一起。错误码 0 仅表示应用主动取消。
+        let _ = self.send.reset(0u32.into());
     }
 }
 
@@ -175,6 +201,11 @@ pub mod ws {
             let mut sink = self.0.lock().await;
             let _ = sink.close().await;
         }
+
+        async fn abort(&mut self) {
+            // WebSocket 没有流级 reset；关闭发送侧并让上层丢弃连接。
+            self.close().await;
+        }
     }
 
     struct WsRx(futures_util::stream::SplitStream<WebSocket>);
@@ -194,5 +225,75 @@ pub mod ws {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Recorder {
+        sent: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameTx for Recorder {
+        async fn send_frame(&mut self, _frame: &[u8]) -> anyhow::Result<()> {
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct EmptyRx;
+
+    #[async_trait::async_trait]
+    impl FrameRx for EmptyRx {
+        async fn read_frame(&mut self) -> anyhow::Result<Vec<u8>> {
+            anyhow::bail!("no more frames")
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_poisons_the_connection_and_calls_the_carrier() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let conn = PeerConn::new(
+            Box::new(Recorder {
+                sent: sent.clone(),
+                aborts: aborts.clone(),
+            }),
+            Box::new(EmptyRx),
+        );
+
+        conn.send_frame(b"before").await.unwrap();
+        conn.abort().await;
+        assert_eq!(aborts.load(Ordering::Relaxed), 1);
+        assert_eq!(sent.load(Ordering::Relaxed), 1);
+
+        // 半帧之后同一连接不能再写，否则对端会把后续帧拼到半帧后面。
+        let err = conn.send_frame(b"after").await.unwrap_err();
+        assert!(err.to_string().contains("aborted"), "{err}");
+        assert_eq!(sent.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn close_also_stops_further_writes() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let conn = PeerConn::new(
+            Box::new(Recorder {
+                sent: sent.clone(),
+                aborts: Arc::new(AtomicUsize::new(0)),
+            }),
+            Box::new(EmptyRx),
+        );
+        conn.close().await;
+        assert!(conn.send_frame(b"after-close").await.is_err());
+        assert_eq!(sent.load(Ordering::Relaxed), 0);
     }
 }
