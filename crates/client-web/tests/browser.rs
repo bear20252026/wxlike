@@ -17,6 +17,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen_test::*;
+#[cfg(feature = "ws-fixture")]
+use wxlike_client_core::ports::EventSource;
 use wxlike_client_core::ports::{LocalStore, Secret, Secrets, StoreError, Transport};
 use wxlike_client_web::crypto::{WebCacheCipher, WebSecrets};
 use wxlike_client_web::fetch::FetchTransport;
