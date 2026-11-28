@@ -58,3 +58,7 @@
 `test ×3` / `coverage` 还暴露 `crates/platform/tests/p4_ops.rs::reconcile_clean_after_wallet_ops`：fixture 用字面 `d-a~b` 直聊 id，而 H-01/H-02/H-03 已按真实用户 id 校验会话成员，`claim_redpacket` 返回 `Forbidden`。改为用注册返回的 `a`/`b` 拼 `d-{a}~{b}`；本地 `cargo test -p wxlike-platform --test p4_ops` 18 passed。
 
 `image` job 的失败是 `anchore/sbom-action` 下载 syft v1.42.3 时 GitHub 返回 504，属外部瞬态，代码与镜像检查未失败。
+
+### 第三轮补丁：转发幂等
+
+`mailbox_mirror::http_forward_copies_into_the_target_conversation` 的第二次同 key 转发返回 500：`build_forward` 每次重新生成 `sent_at_ms`，hub 的完整 envelope 比较把正常重试判成 `QuoteReplayConflict`，`forward_message` 又把它统一映射成 500。转发入口改为与 `/send` 共用 `http_send_replay`：先回读已落库转发，同请求直接返回原 `msg_id`；并发冲突后再回读一次，同请求成功、异请求 409。本地 `cargo test -p wxlike-server --test mailbox_mirror` 13 passed。

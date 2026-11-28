@@ -1185,6 +1185,14 @@ fn send_ok(conv_id: &str, msg_id: MsgId) -> Json<serde_json::Value> {
     }))
 }
 
+fn forward_ok(conv_id: &str, msg_id: MsgId) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "forwarded": true,
+        "conv_id": conv_id,
+        "msg_id": hex(msg_id),
+    }))
+}
+
 /// `POST /api/conv/{conv}/send`：HTTP 控制面的发消息入口。
 ///
 /// 走的是 hub 的入站路径（`HubHandle::submit`），因此投递策略、落库、
@@ -1324,15 +1332,23 @@ async fn forward_message(
         &body.msg_id,
     )?;
 
-    deps.hub
-        .submit(&authed.user_id, &env)
-        .await
-        .map_err(internal)?;
-    Ok(Json(serde_json::json!({
-        "forwarded": true,
-        "conv_id": to_conv,
-        "msg_id": hex(env.msg_id),
-    })))
+    // 转发与 send 共用同一套幂等派生：同一个 key 的第二次请求不能再生成新的
+    // `sent_at_ms`，否则 hub 的完整 envelope 比较会把正常重试判成冲突。先回读
+    // 已落库的转发；并发重试输掉时再回读一次，同请求返回原 msg_id、异请求 409。
+    if let Some(msg_id) = http_send_replay(&deps, &env)? {
+        return Ok(forward_ok(&to_conv, msg_id));
+    }
+    match deps.hub.submit(&authed.user_id, &env).await {
+        Ok(()) => {}
+        Err(error) if error.is::<wxlike_net::mq_hub::QuoteReplayConflict>() => {
+            if let Some(msg_id) = http_send_replay(&deps, &env)? {
+                return Ok(forward_ok(&to_conv, msg_id));
+            }
+            return Err(send_error(error));
+        }
+        Err(error) => return Err(internal(error)),
+    }
+    Ok(forward_ok(&to_conv, env.msg_id))
 }
 
 /// 两边都要鉴权，且两边都不能是秘密会话（issue #15：服务端自己守，不靠客户端）。
