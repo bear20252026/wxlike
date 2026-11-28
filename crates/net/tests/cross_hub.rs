@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use wxlike_core::Envelope;
+use wxlike_core::{Envelope, Store};
 use wxlike_mq::{memory::MemoryMq, memory::MemoryRoutes, MqRouter};
-use wxlike_net::{run_mq_hub, Client};
+use wxlike_net::{run_mq_hub, run_mq_hub_with, Client, MqHubOptions};
 
 #[tokio::test]
 async fn direct_message_routes_across_hubs_via_mq() {
@@ -149,4 +149,71 @@ async fn offline_recipient_is_reported_not_crashing() {
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await; // let hub process
+}
+
+#[tokio::test]
+async fn a_remote_delivery_receipt_retires_the_source_outbox() {
+    let mq = Arc::new(MemoryMq::new());
+    let routes = MemoryRoutes::new();
+    let source_store = Arc::new(Store::open(None).unwrap());
+    let router_a = MqRouter::new(mq.clone(), routes.clone());
+    let router_b = MqRouter::new(mq, routes);
+
+    let hub_a = run_mq_hub_with(
+        "hub-a",
+        "127.0.0.1:0".parse().unwrap(),
+        router_a,
+        MqHubOptions {
+            auth: Some(Arc::new(wxlike_net::auth::StaticAuth)),
+            storage: Some(source_store.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let hub_b = run_mq_hub_with(
+        "hub-b",
+        "127.0.0.1:0".parse().unwrap(),
+        router_b,
+        MqHubOptions {
+            auth: Some(Arc::new(wxlike_net::auth::StaticAuth)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let alice = Client::connect(hub_a.local_addr().unwrap(), "localhost", "alice")
+        .await
+        .unwrap();
+    let bob = Client::connect(hub_b.local_addr().unwrap(), "localhost", "bob")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let msg = Envelope::direct("dm", "alice", vec!["bob".into()], 1, "receipt please");
+    let msg_key = hex::encode(msg.msg_id);
+    alice.send(&msg).await.unwrap();
+
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), bob.next_envelope())
+        .await
+        .expect("target hub delivers")
+        .unwrap();
+    assert_eq!(got.sender, "alice");
+
+    // 目标 hub 写成功后发回执；源端只有收到回执才把该收件人记为 delivered。
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if source_store
+                .pending_deliveries(&msg_key)
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("source outbox retires after the receipt");
 }

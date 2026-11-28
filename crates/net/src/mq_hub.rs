@@ -801,18 +801,53 @@ async fn prune_deliveries_loop(store: Arc<Store>) {
 /// 旧实现在这里无条件返回 `()`，于是"目标 hub 上没人连着"也会被 ack，
 /// 消息就只剩源端归档了。
 async fn deliver_bytes(state: &Arc<HubState>, bytes: &[u8]) -> anyhow::Result<()> {
-    let env = match WireFrame::from_bytes(bytes) {
-        Ok(WireFrame::Msg(env)) => env,
-        Ok(_) => return Ok(()),
+    match WireFrame::from_bytes(bytes) {
+        Ok(WireFrame::Msg(env)) => deliver_envelope(state, &env).await,
+        Ok(WireFrame::RoutedMsg {
+            source_hub,
+            envelope,
+        }) => {
+            // 先真正写进实时连接/离线队列，再向源 hub 发回执。回执发布失败
+            // 返回 Err，消费循环不 ack，目标 hub 的可靠队列会重投；客户端按
+            // msg_id 去重，重投不会变成重复消息。
+            deliver_envelope(state, &envelope).await?;
+            if envelope.msg_id != NO_MSG_ID {
+                let msg_key = hex::encode(envelope.msg_id);
+                for recipient in &envelope.to {
+                    let receipt = WireFrame::DeliveryReceipt {
+                        msg_key: msg_key.clone(),
+                        recipient: recipient.clone(),
+                    }
+                    .to_bytes()?;
+                    state
+                        .router
+                        .mq
+                        .publish(&hub_queue(&source_hub), receipt)
+                        .await
+                        .context("publish delivery receipt")?;
+                }
+            }
+            Ok(())
+        }
+        Ok(WireFrame::DeliveryReceipt { msg_key, recipient }) => {
+            // 源 hub：目标 hub 已经写成功或落盘，才退休 outbox 里的这个收件人。
+            mark_content_delivered(state, &msg_key, &recipient);
+            Ok(())
+        }
+        Ok(_) => Ok(()),
         Err(err) => {
             // 坏帧重投一万次也不会变好：吃掉它，别把队列堵死
             eprintln!("[mq-hub] bad frame from mq: {err}");
-            return Ok(());
+            Ok(())
         }
-    };
+    }
+}
+
+/// 把一条已解码的信封投到本 hub 的收件人；空 `to` 走尽力广播。
+async fn deliver_envelope(state: &Arc<HubState>, env: &Envelope) -> anyhow::Result<()> {
     if env.to.is_empty() {
         // 广播帧没有确定的收件人列表，只能尽力而为（#13 会把广播本身收紧）
-        deliver_local(state, &env).await;
+        deliver_local(state, env).await;
         return Ok(());
     }
     let frame = WireFrame::Msg(env.clone()).to_bytes()?;
@@ -1261,8 +1296,11 @@ async fn dispatch_control(
             handle_resume(state, conn, session, conn_id, &conv_id, cursor).await?;
             Ok(None)
         }
-        WireFrame::Event { .. } | WireFrame::Auth { .. } => {
-            // 服务端下行帧的形状：客户端不得冒充 hub 广播范围提示
+        WireFrame::Event { .. }
+        | WireFrame::Auth { .. }
+        | WireFrame::RoutedMsg { .. }
+        | WireFrame::DeliveryReceipt { .. } => {
+            // 服务端下行/ hub 间控制帧：客户端不得冒充
             tracing::warn!(hub = %state.hub_id, user = %session.user_id, "server-only control frame from client; ignored");
             Ok(None)
         }
@@ -2221,7 +2259,7 @@ fn spawn_delivery(
     state: &Arc<HubState>,
     env: &Envelope,
     rcpt: String,
-) -> tokio::task::JoinHandle<(String, anyhow::Result<()>)> {
+) -> tokio::task::JoinHandle<(String, anyhow::Result<RouteOutcome>)> {
     let frame = match WireFrame::Msg(mention_variant(env, &rcpt)).to_bytes() {
         Ok(frame) => frame,
         Err(err) => return tokio::spawn(async move { (rcpt, Err(err)) }),
@@ -2280,7 +2318,9 @@ async fn fanout_content(
             }
         };
         match outcome {
-            Ok(()) => mark_content_delivered(state, msg_key, &rcpt),
+            Ok(RouteOutcome::Delivered) => mark_content_delivered(state, msg_key, &rcpt),
+            // 远端只是入队成功；真正退休要等目标 hub 的 DeliveryReceipt。
+            Ok(RouteOutcome::RemoteQueued) => {}
             Err(err) => {
                 first_error.get_or_insert(err);
             }
@@ -2359,7 +2399,11 @@ fn spawn_fanout_delivery(
         Ok(frame) => frame,
         Err(err) => return tokio::spawn(async move { Err(err) }),
     };
-    tokio::spawn(async move { deliver_via_route(&state, &rcpt, &frame, park_offline).await })
+    tokio::spawn(async move {
+        deliver_via_route(&state, &rcpt, &frame, park_offline)
+            .await
+            .map(|_| ())
+    })
 }
 
 /// 取第一个失败（任务 panic 也算），成功返回 `None`。
@@ -2383,24 +2427,46 @@ fn first_task_error(
 ///   瞬时信号本来就不该存）。
 ///
 /// 返回 `Err` 表示**没交出去**：调用方据此决定要不要 ack / 记投递失败。
+/// 一次投递在**本进程**能确认到哪一步。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouteOutcome {
+    /// 本 hub 写成功或已落 durable inbox，可以由调用方直接退休 outbox。
+    Delivered,
+    /// 只进了远端 hub 的 MQ；要等目标 hub 的 `DeliveryReceipt` 才能退休。
+    RemoteQueued,
+}
+
 async fn deliver_via_route(
     state: &Arc<HubState>,
     user: &str,
     frame: &[u8],
     park_offline: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RouteOutcome> {
     match state.router.routes.route_of(user).await? {
-        Some(h) if h == state.hub_id => deliver_here(state, user, frame, park_offline).await,
-        Some(h) => {
-            state
-                .router
-                .mq
-                .publish(&hub_queue(&h), frame.to_vec())
-                .await
+        Some(h) if h == state.hub_id => {
+            deliver_here(state, user, frame, park_offline).await?;
+            Ok(RouteOutcome::Delivered)
         }
-        None if park_offline => park(state, user, frame).await,
+        Some(h) => {
+            // 内容帧多包一层，把源 hub 带给目标；目标写完/落盘后发回执。
+            // 没有 msg_id 的瞬时帧不包，避免无意义的回执。
+            let payload = match WireFrame::from_bytes(frame) {
+                Ok(WireFrame::Msg(env)) if env.msg_id != NO_MSG_ID => WireFrame::RoutedMsg {
+                    source_hub: state.hub_id.clone(),
+                    envelope: env,
+                }
+                .to_bytes()?,
+                _ => frame.to_vec(),
+            };
+            state.router.mq.publish(&hub_queue(&h), payload).await?;
+            Ok(RouteOutcome::RemoteQueued)
+        }
+        None if park_offline => {
+            park(state, user, frame).await?;
+            Ok(RouteOutcome::Delivered)
+        }
         // transient signal (typing): a user who is not online simply misses it
-        None => Ok(()),
+        None => Ok(RouteOutcome::Delivered),
     }
 }
 

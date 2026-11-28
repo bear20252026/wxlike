@@ -86,6 +86,25 @@ pub enum WireFrame {
         conv_id: String,
         cursor: u64,
     },
+    // ---------------------------------------------------------------------
+    // Hub-to-hub control frames. These are **never** sent to clients: they
+    // travel only through the MQ queue between hubs, appended after Resume so
+    // client-visible variant indices stay unchanged.
+    // ---------------------------------------------------------------------
+    /// A content frame forwarded to another hub. Carrying `source_hub` lets
+    /// the target publish a [`WireFrame::DeliveryReceipt`] back after the
+    /// frame is actually written/parked, instead of treating `mq.publish` as
+    /// end-to-end delivery.
+    RoutedMsg {
+        source_hub: String,
+        envelope: Envelope,
+    },
+    /// Target hub accepted (or durably parked) a [`WireFrame::RoutedMsg`].
+    /// `msg_key` is the same hex `msg_id` key the source outbox uses.
+    DeliveryReceipt {
+        msg_key: String,
+        recipient: String,
+    },
 }
 
 impl WireFrame {

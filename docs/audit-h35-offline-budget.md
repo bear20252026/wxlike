@@ -75,9 +75,7 @@
 
 ## 仍未收口（H-35 保持 open）
 
-- **跨 hub 无端到端回执**：`deliver_via_route` 在远端路由时只确认
-  `mq.publish` 入队成功；目标 hub 投递失败时源 hub 无从得知。可靠队列
-  只能保证目标 hub 内部的 lease 重投，不能保证源 outbox 不提前退休。
+- **跨 hub 回执**已在后续批次收口，见 `docs/audit-h35-remote-receipts.md`。
 - **离线行仍是用户级**：v3 `StoredAck` 已按 `conn/conv/device` 退休 inflight，
   但 `offline_inbox` 没有设备维度；“一台设备 ack 删除用户级离线行”的语义
   仍需产品/协议拍板。
